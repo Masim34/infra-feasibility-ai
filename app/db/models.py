@@ -125,6 +125,7 @@ class Analysis(Base):
     sensitivity_results = Column(JSON, nullable=True)
     monte_carlo_results = Column(JSON, nullable=True)
     full_report = Column(JSON, nullable=True)
+        narrative_report = Column(Text, nullable=True)
 
     # Metadata
     processing_time_seconds = Column(Float, nullable=True)
