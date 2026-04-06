@@ -86,7 +86,7 @@ def run_full_analysis(self, analysis_id: str):
 "
                 f"Technology: {project.technology}. Capacity: {project.capacity_mw} MW.
 "
-                f"Projected NPV: ${financials['npv_usd']:,.2f}. IRR: {financials['irr_percent']:.2f}%.
+                f"Projected NPV: ${financials['npv_usd']}. IRR: {financials['irr_percent']}%.
 "
                 f"Country Risk: {risk['grade']}.
 "
