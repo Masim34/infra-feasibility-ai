@@ -1,82 +1,65 @@
-# ============================================================
-# infra-feasibility-ai - Docker Compose
-# Services: backend (FastAPI), database (PostgreSQL)
-# ============================================================
-version: "3.9"
+version: '3.8'
 
 services:
-
-  # ── FastAPI Backend ──────────────────────────────────────────
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: infra-ai-backend
+    build: .
+    container_name: infra-backend
     ports:
       - "8000:8000"
+    env_file:
+      - .env.example
     environment:
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
-      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-infraai}
-      - ELECTRICITYMAP_API_KEY=${ELECTRICITYMAP_API_KEY:-}
-      - ENVIRONMENT=production
-    volumes:
-      - ./cache:/app/cache
-      - ./reports:/app/reports
+      - DATABASE_URL=postgresql://postgres:password@db:5432/infraai
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       db:
         condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      redis:
+        condition: service_started
     networks:
-      - infra-net
+      - infra-network
 
-  # ── PostgreSQL Database ──────────────────────────────────────
+  worker:
+    build: .
+    container_name: infra-worker
+    command: celery -A app.services.worker.celery_app worker --loglevel=info
+    env_file:
+      - .env.example
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/infraai
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    networks:
+      - infra-network
+
   db:
     image: postgres:15-alpine
-    container_name: infra-ai-db
+    container_name: infra-db
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
-      - POSTGRES_DB=${POSTGRES_DB:-infraai}
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=infraai
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - infra-net
+      - infra-network
 
-  # ── pgAdmin (optional DB UI) ─────────────────────────────────
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: infra-ai-pgadmin
-    environment:
-      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL:-admin@infra-ai.com}
-      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD:-admin}
-    ports:
-      - "5050:80"
-    depends_on:
-      - db
-    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    container_name: infra-redis
     networks:
-      - infra-net
-    profiles:
-      - admin
+      - infra-network
+
+networks:
+  infra-network:
+    driver: bridge
 
 volumes:
   postgres_data:
-
-networks:
-  infra-net:
-    driver: bridge
