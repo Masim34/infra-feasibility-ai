@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>infra-feasibility-ai Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+</head>
+<body class="bg-gray-50 font-sans text-gray-900">
+    <nav class="bg-blue-900 text-white p-4 flex justify-between items-center shadow-lg">
+        <h1 class="text-xl font-bold">🌍 infra-feasibility-ai <span class="text-blue-300 font-normal text-sm">v2.0</span></h1>
+        <div id="auth-nav">
+            <span id="user-display" class="mr-4"></span>
+            <button onclick="logout()" class="bg-blue-700 px-3 py-1 rounded hover:bg-blue-600 transition">Logout</button>
+        </div>
+    </nav>
+
+    <div class="container mx-auto p-6">
+        <!-- Auth View -->
+        <div id="login-view" class="max-w-md mx-auto bg-white p-8 rounded-xl shadow-md mt-20 hidden">
+            <h2 class="text-2xl font-bold mb-6 text-center">Platform Login</h2>
+            <input id="login-user" type="text" placeholder="Username" class="w-full mb-4 p-3 border rounded">
+            <input id="login-pass" type="password" placeholder="Password" class="w-full mb-6 p-3 border rounded">
+            <button onclick="login()" class="w-full bg-blue-600 text-white p-3 rounded font-bold hover:bg-blue-700">Access SaaS Platform</button>
+        </div>
+
+        <!-- Dashboard View -->
+        <div id="dashboard-view" class="hidden">
+            <div class="flex justify-between items-center mb-8">
+                <h2 class="text-3xl font-extrabold text-gray-800">Project Portfolio</h2>
+                <button onclick="showNewProjectModal()" class="bg-green-600 text-white px-6 py-2 rounded-full font-bold hover:bg-green-700 shadow-md">
+                    + New Project
+                </button>
+            </div>
+
+            <div id="projects-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- Projects injected here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = axios.create({ baseURL: 'http://localhost:8000' });
+        let TOKEN = localStorage.getItem('token');
+
+        if (TOKEN) {
+            API.defaults.headers.common['Authorization'] = `Bearer ${TOKEN}`;
+            showDashboard();
+        } else {
+            document.getElementById('login-view').classList.remove('hidden');
+        }
+
+        async function login() {
+            const username = document.getElementById('login-user').value;
+            const password = document.getElementById('login-pass').value;
+            try {
+                const res = await API.post('/auth/token', { username, password });
+                TOKEN = res.data.access_token;
+                localStorage.setItem('token', TOKEN);
+                API.defaults.headers.common['Authorization'] = `Bearer ${TOKEN}`;
+                showDashboard();
+            } catch (err) { alert('Auth failed'); }
+        }
+
+        function logout() {
+            localStorage.clear();
+            window.location.reload();
+        }
+
+        async function showDashboard() {
+            document.getElementById('login-view').classList.add('hidden');
+            document.getElementById('dashboard-view').classList.remove('hidden');
+            loadProjects();
+        }
+
+        async function loadProjects() {
+            try {
+                const res = await API.get('/projects');
+                const list = document.getElementById('projects-list');
+                list.innerHTML = res.data.map(p => `
+                    <div class="bg-white p-6 rounded-xl shadow-sm border hover:shadow-md transition">
+                        <div class="flex justify-between items-start mb-4">
+                            <h3 class="text-xl font-bold">${p.name}</h3>
+                            <span class="bg-blue-100 text-blue-800 text-xs font-bold px-2 py-1 rounded uppercase">${p.technology}</span>
+                        </div>
+                        <p class="text-gray-500 text-sm mb-4">${p.country_code} | ${p.capacity_mw} MW</p>
+                        <div class="flex gap-2">
+                            <button onclick="startAnalysis('${p.id}')" class="flex-1 bg-blue-600 text-white py-2 rounded text-sm font-bold">Run Analysis</button>
+                            <button onclick="window.open('http://localhost:8000/export/'+'${p.id}'+'/pdf')" class="px-4 py-2 border rounded hover:bg-gray-50">PDF</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (err) { console.error(err); }
+        }
+
+        async function startAnalysis(id) {
+            try {
+                await API.post(`/analyze/${id}`);
+                alert('Analysis queued in background worker.');
+            } catch (err) { alert('Failed to start analysis'); }
+        }
+    </script>
+</body>
+</html>
