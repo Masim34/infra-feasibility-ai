@@ -1,151 +1,174 @@
-"""
-app/services/exporter.py
-Investor-grade export service for infra-feasibility-ai.
-Generates PDF reports (using ReportLab) and Excel models (using XlsxWriter).
-"""
 import io
 import json
 from datetime import datetime
-from typing import Dict, Any, List
-
-import pandas as pd
-import xlsxwriter
-from reportlab.lib import colors
+from typing import Any, Dict, List
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
-from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
 
 
-def generate_excel_model(report_data: Dict[str, Any]) -> io.BytesIO:
-    """
-    Generate a multi-sheet Excel financial model and technical report.
-    """
-    output = io.BytesIO()
-    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
-    
-    # Formats
-    header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
-    title_fmt = workbook.add_format({'bold': True, 'font_size': 14, 'font_color': '#1F4E78'})
-    money_fmt = workbook.add_format({'num_format': '$#,##0.00'})
-    pct_fmt = workbook.add_format({'num_format': '0.0%'})
-    
-    # 1. Summary Sheet
-    summary = workbook.add_worksheet('Executive Summary')
-    summary.write('A1', 'Infrastructure Feasibility Analysis: ' + report_data['project']['name'], title_fmt)
-    summary.write('A3', 'Generated on:', header_fmt)
-    summary.write('B3', datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'))
-    
-    rows = [
-        ('Project Country', report_data['project']['country']),
-        ('Technology', report_data['project']['technology']),
-        ('Capacity (MW)', report_data['project']['capacity_mw']),
-        ('Annual Production (MWh)', report_data['energy']['annual_production_mwh']),
-        ('NPV (USD)', report_data['financials']['npv_usd']),
-        ('IRR (%)', report_data['financials']['irr_percent'] / 100),
-        ('LCOE ($/MWh)', report_data['financials']['lcoe_usd_mwh']),
-        ('Payback Years', report_data['financials']['payback_years']),
-        ('Country Risk Grade', report_data['risk']['risk_grade']),
-    ]
-    
-    for i, (label, val) in enumerate(rows):
-        summary.write(i + 5, 0, label, header_fmt)
-        if isinstance(val, (int, float)) and 'USD' in label:
-            summary.write(i + 5, 1, val, money_fmt)
-        elif 'IRR' in label or '%' in label:
-            summary.write(i + 5, 1, val, pct_fmt)
-        else:
-            summary.write(i + 5, 1, val)
-            
-    # 2. Financials Sheet
-    fin = workbook.add_worksheet('Financial Projections')
-    fin.write('A1', 'Annual Cash Flow Projections', title_fmt)
-    
-    # 3. Risk & Scenarios Sheet
-    scen = workbook.add_worksheet('Scenario Analysis')
-    scen.write('A1', 'Scenario Comparison', title_fmt)
-    
-    if 'scenarios' in report_data:
-        headers = ['Scenario', 'NPV (USD)', 'IRR (%)', 'LCOE ($/MWh)']
-        for col, h in enumerate(headers):
-            scen.write(2, col, h, header_fmt)
-            
-        for row, (s_name, s_data) in enumerate(report_data['scenarios'].items()):
-            scen.write(row + 3, 0, s_name)
-            scen.write(row + 3, 1, s_data.get('npv_usd', 0), money_fmt)
-            scen.write(row + 3, 2, s_data.get('irr_percent', 0) / 100, pct_fmt)
-            scen.write(row + 3, 3, s_data.get('lcoe_usd_mwh', 0))
-
-    workbook.close()
-    output.seek(0)
-    return output
+def _safe_iso(dt) -> str | None:
+    if not dt:
+        return None
+    if isinstance(dt, str):
+        return dt
+    return dt.isoformat()
 
 
-def generate_pdf_report(report_data: Dict[str, Any]) -> io.BytesIO:
-    """
-    Generate an investor-grade PDF report.
-    """
+def _summary_from_full_report(full_report: Dict[str, Any]) -> Dict[str, Any]:
+    if not full_report:
+        return {}
+    summary_section = full_report.get("summary") or full_report.get("executive_summary") or {}
+    return {
+        "recommendation": summary_section.get("recommendation") or summary_section.get("headline"),
+        "key_numbers": summary_section.get("key_numbers") or {},
+    }
+
+
+def export_analysis_json(analysis) -> bytes:
+    payload: Dict[str, Any] = {
+        "analysis": {
+            "id": analysis.id,
+            "project_id": analysis.project_id,
+            "user_id": analysis.user_id,
+            "status": analysis.status,
+            "error_message": analysis.error_message,
+            "created_at": _safe_iso(analysis.created_at),
+            "completed_at": _safe_iso(analysis.completed_at),
+            "processing_time_seconds": analysis.processing_time_seconds,
+        },
+        "project": {
+            "name": getattr(analysis.project, "name", None),
+            "country": getattr(analysis.project, "country", None),
+            "technology": getattr(analysis.project, "technology", None),
+            "capacity_mw": getattr(analysis.project, "capacity_mw", None),
+            "location_lat": getattr(analysis.project, "location_lat", None),
+            "location_lon": getattr(analysis.project, "location_lon", None),
+        },
+        "inputs": {"parameters": analysis.parameters or {}},
+        "financials": analysis.financial_results or {},
+        "energy": analysis.energy_results or {},
+        "risk": analysis.risk_results or {},
+        "scenarios": analysis.scenarios_results or {},
+        "sensitivity": analysis.sensitivity_results or {},
+        "monte_carlo": analysis.monte_carlo_results or {},
+        "country_risk_score": analysis.country_risk_score,
+        "country_risk_grade": analysis.country_risk_grade,
+        "risk_adjusted_discount_rate": analysis.risk_adjusted_discount_rate,
+        "narrative_report": analysis.narrative_report,
+        "full_report": analysis.full_report or {},
+        "summary": _summary_from_full_report(analysis.full_report or {}),
+    }
+    return json.dumps(payload, indent=2, default=str).encode("utf-8")
+
+
+def _pdf_write_multiline(pdf: canvas.Canvas, text: str, x: float, y_start: float, line_height: float, max_width: int) -> float:
+    if not text:
+        return y_start
+    lines: List[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            lines.append("")
+            continue
+        while len(line) > max_width:
+            split_pos = line.rfind(" ", 0, max_width)
+            if split_pos <= 0:
+                split_pos = max_width
+            lines.append(line[:split_pos])
+            line = line[split_pos:].lstrip()
+        lines.append(line)
+    y = y_start
+    for ln in lines:
+        if y < 60:
+            pdf.showPage()
+            pdf.setFont("Helvetica", 10)
+            y = A4[1] - 50
+        pdf.drawString(x, y, ln)
+        y -= line_height
+    return y
+
+
+def export_analysis_pdf(analysis) -> bytes:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
-    styles = getSampleStyleSheet()
-    
-    # Custom Styles
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=18, spaceAfter=20, textColor=colors.hexColor("#1F4E78"))
-    h2_style = ParagraphStyle('H2Style', parent=styles['Heading2'], fontSize=14, spaceBefore=15, spaceAfter=10, textColor=colors.hexColor("#2E75B6"))
-    body_style = styles['BodyText']
-    
-    elements = []
-    
-    # Cover Page
-    elements.append(Paragraph(f"Project Feasibility Report", title_style))
-    elements.append(Paragraph(f"<b>{report_data['project']['name']}</b>", ParagraphStyle('Sub', fontSize=24, alignment=1)))
-    elements.append(Spacer(1, 2 * inch))
-    elements.append(Paragraph(f"Country: {report_data['project']['country']}", body_style))
-    elements.append(Paragraph(f"Capacity: {report_data['project']['capacity_mw']} MW", body_style))
-    elements.append(Paragraph(f"Date: {datetime.utcnow().strftime('%B %d, %Y')}", body_style))
-    elements.append(PageBreak())
-    
-    # Executive Summary
-    elements.append(Paragraph("1. Executive Summary", h2_style))
-    summary_text = (
-        f"This report evaluates the feasibility of a {report_data['project']['capacity_mw']} MW "
-        f"{report_data['project']['technology']} project in {report_data['project']['country']}. "
-        f"The analysis yields an Estimated NPV of ${report_data['financials']['npv_usd']:,.2f} "
-        f"and an IRR of {report_data['financials']['irr_percent']:.2f}%."
-    )
-    elements.append(Paragraph(summary_text, body_style))
-    
-    # Metrics Table
-    data = [
-        ['Metric', 'Value'],
-        ['Technology', report_data['project']['technology']],
-        ['Annual Production', f"{report_data['energy']['annual_production_mwh']:,.0f} MWh"],
-        ['Capacity Factor', f"{report_data['energy']['capacity_factor']:.1f}%"],
-        ['Levelized Cost (LCOE)', f"${report_data['financials']['lcoe_usd_mwh']:.2f} / MWh"],
-        ['Country Risk Score', f"{report_data['risk']['risk_score']:.1f} ({report_data['risk']['risk_grade']})"],
-    ]
-    t = Table(data, colWidths=[2.5*inch, 2.5*inch])
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.hexColor("#1F4E78")),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-    ]))
-    elements.append(Spacer(1, 0.2 * inch))
-    elements.append(t)
-    
-    # Financial Analysis
-    elements.append(Paragraph("2. Financial Analysis", h2_style))
-    elements.append(Paragraph("Key indicators based on risk-adjusted discount rates and project life.", body_style))
-    
-    # Risk & Scenarios
-    elements.append(Paragraph("3. Scenario & Risk Analysis", h2_style))
-    elements.append(Paragraph("Sensitivity analysis against price volatility and capex overruns.", body_style))
-    
-    # Build
-    doc.build(elements)
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    y = height - 50
+    line_height = 16
+    margin_x = 50
+
+    pdf.setTitle(f"analysis-{analysis.id}")
+    pdf.setFont("Helvetica-Bold", 14)
+    pdf.drawString(margin_x, y, "Infrastructure Feasibility Analysis Report")
+    y -= 2 * line_height
+
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(margin_x, y, f"Generated: {datetime.utcnow().isoformat()} UTC")
+    y -= line_height
+    pdf.drawString(margin_x, y, f"Analysis ID: {analysis.id}")
+    y -= line_height
+    pdf.drawString(margin_x, y, f"Status: {analysis.status}")
+    y -= 2 * line_height
+
+    project = getattr(analysis, "project", None)
+    if project:
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(margin_x, y, "Project Overview")
+        y -= 1.5 * line_height
+        pdf.setFont("Helvetica", 10)
+        pdf.drawString(margin_x, y, f"Name: {project.name}")
+        y -= line_height
+        pdf.drawString(margin_x, y, f"Country: {project.country}")
+        y -= line_height
+        pdf.drawString(margin_x, y, f"Technology: {project.technology}")
+        y -= line_height
+        pdf.drawString(margin_x, y, f"Capacity (MW): {project.capacity_mw}")
+        y -= line_height
+        pdf.drawString(margin_x, y, f"Location: {project.location_lat}, {project.location_lon}")
+        y -= 2 * line_height
+
+    pdf.setFont("Helvetica-Bold", 11)
+    pdf.drawString(margin_x, y, "Key Financial Metrics")
+    y -= 1.5 * line_height
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(margin_x, y, f"NPV (USD): {analysis.npv_usd}")
+    y -= line_height
+    pdf.drawString(margin_x, y, f"IRR (%): {analysis.irr_percent}")
+    y -= line_height
+    pdf.drawString(margin_x, y, f"LCOE (USD/MWh): {analysis.lcoe_usd_mwh}")
+    y -= line_height
+    pdf.drawString(margin_x, y, f"Country Risk Score: {analysis.country_risk_score}")
+    y -= line_height
+    pdf.drawString(margin_x, y, f"Country Risk Grade: {analysis.country_risk_grade}")
+    y -= 2 * line_height
+
+    pdf.setFont("Helvetica-Bold", 11)
+    pdf.drawString(margin_x, y, "Narrative Summary")
+    y -= 1.5 * line_height
+    pdf.setFont("Helvetica", 10)
+    narrative = analysis.narrative_report or "No narrative available."
+    y = _pdf_write_multiline(pdf, narrative, margin_x, y, line_height, max_width=100)
+    y -= 2 * line_height
+
+    summary = _summary_from_full_report(analysis.full_report or {})
+    if summary.get("recommendation"):
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(margin_x, y, "Recommendation")
+        y -= 1.5 * line_height
+        pdf.setFont("Helvetica", 10)
+        y = _pdf_write_multiline(pdf, summary["recommendation"], margin_x, y, line_height, max_width=100)
+        y -= line_height
+
+    key_numbers = summary.get("key_numbers") or {}
+    if key_numbers:
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(margin_x, y, "Key Numbers")
+        y -= 1.5 * line_height
+        pdf.setFont("Helvetica", 10)
+        for k, v in key_numbers.items():
+            pdf.drawString(margin_x + 15, y, f"- {k}: {v}")
+            y -= line_height
+
+    pdf.showPage()
+    pdf.save()
     buffer.seek(0)
-    return buffer
+    return buffer.read()
