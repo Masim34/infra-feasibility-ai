@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 from fastapi.testclient import TestClient
 import sys
 import os
@@ -23,13 +23,17 @@ def mock_db():
 
 @pytest.fixture(scope="session")
 def client(mock_db):
-    """Test client with mocked DB and AI."""
-    with patch("app.db.session.get_db", return_value=iter([mock_db])), \
-         patch("app.services.ai_client.openai") as mock_openai:
-
-        mock_openai.chat.completions.create.return_value = MagicMock(
-            choices=[MagicMock(message=MagicMock(content="{\"score\": 75, \"summary\": \"Test summary\", \"risks\": [], \"opportunities\": [], \"recommendation\": \"Proceed\"}"))]
-        )
+    """Test client with mocked DB."""
+    # Mock httpx to prevent real HTTP calls from AnthropicClient
+    with patch("httpx.AsyncClient") as mock_httpx:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "content": [{"text": "Test narrative response"}]
+        }
+        mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_httpx.return_value)
+        mock_httpx.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_httpx.return_value.post = AsyncMock(return_value=mock_response)
 
         from app.main import app
         from app.db.session import get_db
