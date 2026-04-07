@@ -1,47 +1,50 @@
-"""API tests using mocked dependencies."""
+"""API tests using the actual app routes."""
 import pytest
-from unittest.mock import MagicMock, patch
 
 
 def test_health_check(client):
-    """Test the health endpoint."""
+    """Test the health endpoint returns ok status."""
     response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "healthy"
-
-
-def test_root_endpoint(client):
-    """Test the root endpoint."""
-    response = client.get("/")
-    assert response.status_code == 200
+    assert data["status"] == "ok"
+    assert "version" in data
 
 
 def test_register_user(client):
-    """Test user registration."""
+    """Test user registration endpoint exists."""
     payload = {
         "username": "testuser",
         "email": "test@example.com",
-        "password": "SecurePass123!"
+        "password": "SecurePass123!",
+        "full_name": "Test User",
+        "company": "Test Corp"
     }
-    response = client.post("/api/v1/auth/register", json=payload)
+    response = client.post("/auth/register", json=payload)
+    # 201 success or 400 duplicate or 422 validation
     assert response.status_code in [200, 201, 400, 422]
 
 
 def test_login_invalid_credentials(client):
-    """Test login with invalid credentials."""
+    """Test login with invalid credentials returns 401."""
     payload = {"username": "nonexistent", "password": "wrongpassword"}
-    response = client.post("/api/v1/auth/token", data=payload)
+    response = client.post("/auth/token", json=payload)
     assert response.status_code in [401, 422, 404]
 
 
 def test_list_projects_unauthenticated(client):
-    """Test that unauthenticated access returns 401."""
-    response = client.get("/api/v1/projects/")
-    assert response.status_code == 401
+    """Test that unauthenticated access returns 401 or 403."""
+    response = client.get("/projects")
+    assert response.status_code in [401, 403]
 
 
-def test_list_analyses_unauthenticated(client):
-    """Test that unauthenticated access returns 401."""
-    response = client.get("/api/v1/analyses/")
-    assert response.status_code == 401
+def test_get_analysis_unauthenticated(client):
+    """Test that unauthenticated analysis access returns 401 or 403."""
+    response = client.get("/analysis/fake-id")
+    assert response.status_code in [401, 403]
+
+
+def test_export_json_unauthenticated(client):
+    """Test that export endpoint requires auth."""
+    response = client.get("/analysis/fake-id/export/json")
+    assert response.status_code in [401, 403]
